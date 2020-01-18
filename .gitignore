@@ -24,3 +24,4 @@ doc/*.synctex.gz
 rts/*.o
 *.hi
 *.o
+*.d

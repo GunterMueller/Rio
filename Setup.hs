@@ -1,2 +1,11 @@
+import Distribution.Types.HookedBuildInfo
 import Distribution.Simple
-main = defaultMain
+import System.Process
+
+main = defaultMainWithHooks hooks where
+  hooks = simpleUserHooks {
+    preBuild = \_ a -> do
+      system "make -C rts/"
+      pure emptyHookedBuildInfo
+  }
+

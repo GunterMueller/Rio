@@ -3,6 +3,7 @@ module Core.Lower (lowerProg) where
 
 import Control.Arrow
 
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Control.Monad.Writer
 
@@ -10,10 +11,10 @@ import qualified Syntax as S
 import Syntax (Var(..), Exp)
 import Core.Lang
 
-lowerProg :: Exp -> [SC p]
-lowerProg = execWriter . go mempty where
-  go supercomb (S.Let _ _ (nm, exp) rest) =
-    if Set.null (S.free exp Set.\\ supercomb)
+lowerProg :: S.Gamma -> Exp -> [SC p]
+lowerProg (S.Gamma env) = execWriter . go (Map.keysSet env) where
+  go supercomb (S.Let _ rec (nm, exp) rest) =
+    if Set.null ((if rec == S.Rec then Set.delete nm else id) (S.free exp Set.\\ supercomb))
        then do
          makeTopSc nm exp
          go (Set.insert nm supercomb) rest

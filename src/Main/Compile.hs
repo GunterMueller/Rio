@@ -31,12 +31,26 @@ realise toplevel code = do
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft f = either (Left . f) Right
 
+rioTop :: Gamma
+rioTop =
+  Gamma . Map.fromList $
+    [ (Var "add", poly $ "Int" :-> "Int" :-> "Int")
+    , (Var "sub", poly $ "Int" :-> "Int" :-> "Int")
+    , (Var "div", poly $ "Int" :-> "Int" :-> "Int")
+    , (Var "mul", poly $ "Int" :-> "Int" :-> "Int")
+    , (Var "equ", poly $ "Int" :-> "Int" :-> "Bool")
+    , (Var "False", poly "Bool")
+    , (Var "True", poly "Bool")
+    , (Var "if", poly $ "Bool" :-> "a" :-> "a" :-> "a")
+    ]
+  where poly = Typing Nothing mempty
+
 compile :: String -> String -> IO ()
 compile file out_path = do
   runtime <- getDataFileName "rts/rts.o"
   source <- readFile file
   (code, Typing _ (Delta env) ty) <-
-    case realise mempty source of
+    case realise rioTop source of
       Left e -> do
         either print (putStrLn . showError source) e
         exitFailure
@@ -56,10 +70,12 @@ compile file out_path = do
       ]
     exitFailure
 
-  let core = lowerProg code
+  let core = lowerProg rioTop code
   let gm_code = map compileSc core
-  let sects = assembleProg gm_code
+  let sects = assembleProg (gm_code ++ precompiledSc)
 
+  _ <- traverse (hPutStr stdout . show) sects
+  pure ()
   withTempFile "/tmp/" "rio-supercombinators.s" $ \asm_out handle -> do
     _ <- traverse (hPutStr handle . show) sects
     hPutStrLn handle ".globl _main"

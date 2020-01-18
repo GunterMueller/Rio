@@ -12,8 +12,8 @@ notag:
 	jmp .tag_error
 
 link:
-	popq %r12
-	pushq 8(%r12)
+	popq %rax
+	pushq 8(%rax)
 	jmp unwind
 
 app:
@@ -37,10 +37,20 @@ sc:
 integer:
 	movq $.int_format, %rdi
 	movq 8(%r10), %rsi
+	cmpq %r12, %r13
+	jne head_normal_form
 	xor %rax, %rax
 	call printf
 	movq $0, %rdi
 	call exit
+
+head_normal_form:
+	popq %r8
+	addq $64, %r12
+	movq 8(%r12),  %rbx # return addr
+	movq (%r12),   %rsp # saved stack pointer
+	pushq %r8
+	jmp *%rbx
 
 .tag_error:
 	movq $.tag_fmt, %rdi

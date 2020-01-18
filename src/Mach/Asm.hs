@@ -1,26 +1,31 @@
 {-# LANGUAGE PolyKinds, DataKinds, GADTs, ExistentialQuantification,
-   ScopedTypeVariables #-}
+   ScopedTypeVariables, GeneralisedNewtypeDeriving, DerivingStrategies, FlexibleInstances, MultiParamTypeClasses #-}
 module Mach.Asm
   ( Block(..), Record(..), Section(..), Directive(..), ConstOp(..), Operand
   , Size(..), Target(..), Register(..)
   , comment
-  , push, pop
+  , push, pop, idiv, mul
   , mov, lea
-  , add, cmp
-  , jmp, jne, je, jna, ja, call
+  , add, sub, xor, cmp
+  , (=<-), (+=), (-=), (^=)
+  , jmp, jne, je, jna, ja, jz, jnz, call
+  , cmove, cmovne, cmova, cmovna, cmovz, cmovnz
+
   , rax, rbx, rcx, rdx, rdi, rsi, rsp, rbp, r10, r11, r12, r13, r14, r15
   , eax, ebx, ecx, edx, edi, esi, esp, ebp, r10d, r11d, r12d, r13d, r14d, r15d
+
   , int8, int16, int32, int64, label
   , byteOff, wordOff, longOff, quadOff
-  , r
-  , BlockBuilder, buildBlock, (=<-), (+=)
+  , r, genLabel
+  , BlockBuilder, buildBlock
   )
   where
 
 import Language.Haskell.TH.Quote
 import Language.Haskell.TH
 
-import Control.Monad.Writer
+import Control.Monad.Writer.Strict
+import Control.Monad.State
 
 import Data.Proxy
 import Data.List
@@ -54,29 +59,51 @@ instance HasSize s => HasSize (Proxy s) where
 
 data Insn
   = forall s. HasSize s => Mov  (Operand s) (Operand s)
+  | forall s. HasSize s => Xor  (Operand s) (Operand s)
   | forall s. HasSize s => Cmp  (Operand s) (Operand s)
   | forall s. HasSize s => Lea  (Operand s) (Operand s)
   | forall s. HasSize s => Add  (Operand s) (Operand s)
+  | forall s. HasSize s => Sub  (Operand s) (Operand s)
+  | forall s. HasSize s => Idiv (Operand s)
   | forall s. HasSize s => Push (Operand s)
+  | forall s. HasSize s => Mul  (Operand s)
   | forall s. HasSize s => Pop  (Operand s)
-  | Jmp  Target | Ja Target | Jna Target | Je Target | Jne Target
+  | forall s. HasSize s => Cmov Cond (Operand s) (Operand s)
+  | Jmp Target | J Cond Target
   | Call String
   | Comment String
+  | LocalLabel String
+
+data Cond
+  = E | Ne | Z | Nz | A | Na
+  deriving (Eq, Ord)
+
+instance Show Cond where
+  show E  = "e"
+  show Ne = "ne"
+  show Z  = "z"
+  show Nz = "nz"
+  show A  = "a"
+  show Na = "na"
 
 instance Show Insn where
-  show (Call x)     = "call " ++ x
-  show (Jmp t)      = "jmp"   ++ suf t  ++ show t
-  show (Ja t)       = "ja"    ++ suf t  ++ show t
-  show (Jna t)      = "jna"   ++ suf t  ++ show t
-  show (Je t)       = "jz"    ++ suf t  ++ show t
-  show (Jne t)      = "jnz"   ++ suf t  ++ show t
-  show (Pop op)     = "pop"   ++ suffix op ++ " " ++ show op
-  show (Push op)    = "push"  ++ suffix op ++ " " ++ show op
-  show (Mov op op2) = "mov"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
-  show (Lea op op2) = "lea"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
-  show (Cmp op op2) = "cmp"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
-  show (Add op op2) = "add"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
-  show (Comment s)  = '#':' ':s
+  show (Call x)       = "call " ++ x
+  show (Jmp t)        = "jmp"   ++ suf t  ++ show t
+  show (J c t)        = 'j':show c ++ suf t ++ show t
+  show (Pop op)       = "pop"   ++ suffix op ++ " " ++ show op
+  show (Push op)      = "push"  ++ suffix op ++ " " ++ show op
+  show (Idiv op)      = "push"  ++ suffix op ++ " " ++ show op
+  show (Mul op)       = "mul"   ++ suffix op ++ " " ++ show op
+  show (Mov op op2)   = "mov"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Lea op op2)   = "lea"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Cmp op op2)   = "cmp"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Add op op2)   = "add"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Sub op op2)   = "sub"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Xor op op2)   = "xor"   ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Cmov c op op2)
+    = "cmov" ++ show c ++ suffix op ++ " " ++ show op ++ ',':' ':show op2
+  show (Comment s)    = '#':' ':s
+  show (LocalLabel s) = s ++ ":"
 
 suf :: Target -> String
 suf (Indirect _) = "q "
@@ -225,12 +252,16 @@ instance Show Directive where
   show (Byte x)   = ".byte "  ++ concat (intersperse ", " (map show x))
 
 data Block =
-  Block { blockLabel :: String
-        , blockIsns  :: [Insn]
+  Block { blockLabel  :: String
+        , blockIsns   :: [Insn]
         }
 
 instance Show Block where
-  show (Block l insns) = unlines ((l ++ ":") : map (("  " ++) . show) insns)
+  show (Block nm insns) = unlines ((nm ++ ":") : map (indent . show) insns) where
+    indent [] = []
+    indent xs
+      | last xs == ':' = xs
+      | otherwise = ' ': ' ':xs
 
 data Record =
   Record { recordLabel :: String
@@ -259,38 +290,76 @@ r = QuasiQuoter {
     quoteDec  = \_ -> fail "illegal raw string QuasiQuote (allowed as expression only, used as a declaration)"
 }
 
-type BlockBuilder = Writer (Endo [Insn])
+data BbState = BbState { off :: !Int, nextLabel :: !Int, blockName :: String }
+  deriving (Eq, Show, Ord)
 
-buildBlock :: String -> Writer (Endo [Insn]) a -> Block
+newtype BlockBuilder a = Bb { runBlockBuilder :: StateT BbState (Writer (Endo [Insn])) a }
+  deriving newtype ( MonadState BbState, MonadWriter (Endo [Insn])
+                   , Functor, Applicative, Monad, MonadFix
+                   )
+
+buildBlock :: String -> BlockBuilder a -> Block
 buildBlock name comp =
-  let insns = appEndo (execWriter comp) []
-   in Block name insns
+  let ((_, _), writer) = runWriter (runStateT (runBlockBuilder comp) empty)
+      empty = BbState 1 0 name
+   in Block name (appEndo writer [])
 
-comment :: String -> Writer (Endo [Insn]) ()
+comment :: String -> BlockBuilder ()
 comment x = tell (Endo (Comment x:))
 
-push, pop :: HasSize s => Operand s -> Writer (Endo [Insn]) ()
-push x = tell (Endo (Push x:))
-pop x = tell (Endo (Pop x:))
+push, pop, idiv, mul :: HasSize s => Operand s -> BlockBuilder ()
+push x = insn tell (Endo (Push x:))
+idiv x = insn tell (Endo (Idiv x:))
+mul b  = insn tell (Endo (Mul b:))
+pop x  = insn tell (Endo (Pop x:))
 
-jmp, je, jne, ja, jna :: Target -> Writer (Endo [Insn]) ()
-jmp x = tell (Endo (Jmp x:))
-je x  = tell (Endo (Je  x:))
-jne x = tell (Endo (Jne x:))
-ja x  = tell (Endo (Ja  x:))
-jna x = tell (Endo (Jna x:))
+jmp, je, jne, ja, jna, jz, jnz :: Target -> BlockBuilder ()
+jmp x = insn tell (Endo (Jmp x:))
+je x  = insn tell (Endo (J E x:))
+jne x = insn tell (Endo (J Ne x:))
+ja x  = insn tell (Endo (J A  x:))
+jna x = insn tell (Endo (J Na x:))
+jz x  = insn tell (Endo (J Z  x:))
+jnz x = insn tell (Endo (J Nz x:))
 
-call :: String -> Writer (Endo [Insn]) ()
+call :: String -> BlockBuilder ()
 call x = tell (Endo (Call x:))
 
-mov, lea, cmp, add, (=<-), (+=) :: HasSize s => Operand s -> Operand s -> Writer (Endo [Insn]) ()
-mov a b = tell (Endo (Mov a b:))
-lea a b = tell (Endo (Lea a b:))
-cmp a b = tell (Endo (Cmp a b:))
-add a b = tell (Endo (Add a b:))
+mov, lea, cmp, add, sub, xor :: HasSize s => Operand s -> Operand s -> BlockBuilder ()
+mov a b = insn tell (Endo (Mov a b:))
+lea a b = insn tell (Endo (Lea a b:))
+cmp a b = insn tell (Endo (Cmp a b:))
+add a b = insn tell (Endo (Add a b:))
+sub a b = insn tell (Endo (Sub a b:))
+xor a b = insn tell (Endo (Xor a b:))
 
-dest += source = tell (Endo (Add source dest:))
-dest =<- source = tell (Endo (Mov source dest:))
+cmove, cmovne, cmova, cmovna, cmovz, cmovnz :: HasSize s => Operand s -> Operand s -> BlockBuilder ()
+cmove x y  = insn tell (Endo (Cmov E  x y:))
+cmovne x y = insn tell (Endo (Cmov Ne x y:))
+cmova x y  = insn tell (Endo (Cmov A  x y:))
+cmovna x y = insn tell (Endo (Cmov Na x y:))
+cmovz x y  = insn tell (Endo (Cmov Z  x y:))
+cmovnz x y = insn tell (Endo (Cmov Nz x y:))
+
+(+=), (-=), (=<-), (^=) :: HasSize s => Operand s -> Operand s -> BlockBuilder ()
+dest += source  = insn tell (Endo (Add source dest:))
+dest -= source  = insn tell (Endo (Sub source dest:))
+dest ^= source  = insn tell (Endo (Xor source dest:))
+dest =<- source = insn tell (Endo (Mov source dest:))
+
+insn :: (a -> BlockBuilder b) -> a -> BlockBuilder ()
+insn k x = do
+  _ <- k x
+  BbState off l m <- get
+  put $! BbState (off + 1) l m
+
+genLabel :: BlockBuilder Target
+genLabel = do
+  BbState off label nm <- get
+  let lname = ".L" ++ nm ++ "." ++ show label
+  put $! BbState (off + 1) (label + 1) nm
+  insn tell (Endo (LocalLabel lname:))
+  pure (Label lname)
 
 infix 5 =<-
 infix 5 +=

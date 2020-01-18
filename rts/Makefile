@@ -6,8 +6,12 @@ S_SOURCE = $(wildcard *.s)
 S_OBJECT = $(S_SOURCE:.s=.o)
 
 rts.o: $(C_OBJECT) $(S_OBJECT)
+	$(LD) -relocatable $^ -o $@
 
 %.d: %.c
- $(CPP) $(CFLAGS) $< -MMD -MT $(@:.d=.o) >$@
+	$(CPP) $(CFLAGS) $< -MM -MMD -MT $(@:.d=.o) >$@
+
+%.o: %.c
+	$(CC) $(CFLAGS) $< -c -o $@ -g3
 
 -include $(C_DEPEND)

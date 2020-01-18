@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedLists #-}
-module Gm.Compile (compileSc) where
+module Gm.Compile (compileSc, precompiledSc) where
 
 import Data.Sequence (Seq)
 
@@ -9,6 +9,22 @@ import Syntax (Var(..))
 
 import Core.Lang
 import Gm.Machine
+
+precompiledSc :: [GmSc]
+precompiledSc =
+  [ Supercomb (Var "add") 2   [ Push (Arg 0), Eval, Push (Arg 2), Eval, Add, Update 2, Pop 2, Unwind ]
+  , Supercomb (Var "sub") 2   [ Push (Arg 0), Eval, Push (Arg 2), Eval, Sub, Update 2, Pop 2, Unwind ]
+  , Supercomb (Var "div") 2   [ Push (Arg 0), Eval, Push (Arg 2), Eval, Div, Update 2, Pop 2, Unwind ]
+  , Supercomb (Var "mul") 2   [ Push (Arg 0), Eval, Push (Arg 2), Eval, Mul, Update 2, Pop 2, Unwind ]
+  , Supercomb (Var "equ") 2   [ Push (Arg 0), Eval, Push (Arg 2), Eval, Equ, Update 2, Pop 2, Unwind ]
+  , Supercomb (Var "True") 0  [ Push (Value 0), Update 0, Unwind ]
+  , Supercomb (Var "False") 0 [ Push (Value 1), Update 0, Unwind ]
+  , Supercomb (Var "if") 3
+      [ Push (Arg 0)
+      , Eval
+      , Cond [ Push (Arg 1) ] [ Push (Arg 2) ]
+      , Update 3, Pop 3, Unwind ]
+  ]
 
 compileSc :: SC p -> GmSc
 compileSc (SC name args body) =

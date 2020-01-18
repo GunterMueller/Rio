@@ -10,6 +10,7 @@ author:              Abigail Magalhães
 maintainer:          magalhaes.alcantara@pucpr.edu.br
 category:            Language
 extra-source-files:  CHANGELOG.md
+build-type:          Custom
 
 data-files:          rts/rts.o
 

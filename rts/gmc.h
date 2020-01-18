@@ -19,12 +19,18 @@ typedef struct value {
   };
 } val;
 
+struct dump_entry {
+  long stack_pointer;
+  long program_cntr;
+  long new_stack;
+};
+
 #define TAG_LINK 1
 #define TAG_SUPERCOMB 2
 #define TAG_AP 3
 #define TAG_INT 4
 
-register val *HpBase __asm__("r13");
-register val *Hp     __asm__("r14");
-register val *HpLim  __asm__("r15");
-register val **Sp    __asm__("rsp");
+register val *Hp                    asm("r14");
+register val *HpLim                 asm("r15");
+register struct dump_entry *Es      asm("r12");
+register struct dump_entry *EsBase  asm("r13");

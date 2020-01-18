@@ -12,12 +12,16 @@ data GmVal
 
 data GmCode
   = Push GmVal
+  | Pop Int
   | Update Int
   | Alloc Int
   | Slide Int
-  | Pop Int
+  | Cond (Seq GmCode) (Seq GmCode)
   | Unwind
   | MkAp
+  | Eval
+  | Add | Sub | Mul | Div
+  | Equ
   deriving (Eq, Show, Ord)
 
 data GmSc = Supercomb Var Int (Seq GmCode)
